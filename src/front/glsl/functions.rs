@@ -1,7 +1,7 @@
 use crate::{
-    proc::ensure_block_returns, Arena, BinaryOperator, Binding, BuiltIn, EntryPoint, Expression,
-    Function, FunctionArgument, FunctionResult, Handle, MathFunction, RelationalFunction,
-    SampleLevel, ShaderStage, Statement, Type, TypeInner,
+    proc::ensure_block_returns, Arena, BinaryOperator, Binding, Block, BuiltIn, EntryPoint,
+    Expression, Function, FunctionArgument, FunctionResult, Handle, MathFunction,
+    RelationalFunction, SampleLevel, ShaderStage, Statement, Type, TypeInner,
 };
 
 use super::{ast::*, error::ErrorKind};
@@ -9,9 +9,10 @@ use super::{ast::*, error::ErrorKind};
 impl Program<'_> {
     pub fn function_call(
         &mut self,
-        ctx: &mut FunctionContext,
+        ctx: &mut Context,
         fc: FunctionCallKind,
         args: &[Handle<Expression>],
+        body: &mut Block,
     ) -> Result<Handle<Expression>, ErrorKind> {
         match fc {
             FunctionCallKind::TypeConstructor(ty) => {
@@ -24,7 +25,7 @@ impl Program<'_> {
                     let kind = inner.scalar_kind().ok_or_else(|| {
                         ErrorKind::SemanticError("Can only cast to scalar or vector".into())
                     })?;
-                    let val = ctx.function.expressions.append(Expression::As {
+                    let val = ctx.expressions.append(Expression::As {
                         kind,
                         expr: args[0],
                         convert: true,
@@ -34,8 +35,7 @@ impl Program<'_> {
                         TypeInner::Vector { size, .. } if !is_vec => {
                             let components = std::iter::repeat(val).take(size as usize).collect();
 
-                            ctx.function
-                                .expressions
+                            ctx.expressions
                                 .append(Expression::Compose { ty, components })
                         }
                         TypeInner::Matrix {
@@ -56,7 +56,7 @@ impl Program<'_> {
                                 });
                                 let rows = std::iter::repeat(val).take(rows as usize).collect();
 
-                                ctx.function.expressions.append(Expression::Compose {
+                                ctx.expressions.append(Expression::Compose {
                                     ty: vec_ty,
                                     components: rows,
                                 })
@@ -65,7 +65,7 @@ impl Program<'_> {
                             let columns =
                                 std::iter::repeat(column).take(columns as usize).collect();
 
-                            ctx.function.expressions.append(Expression::Compose {
+                            ctx.expressions.append(Expression::Compose {
                                 ty,
                                 components: columns,
                             })
@@ -73,7 +73,7 @@ impl Program<'_> {
                         _ => val,
                     }
                 } else {
-                    ctx.function.expressions.append(Expression::Compose {
+                    ctx.expressions.append(Expression::Compose {
                         ty,
                         components: args.to_vec(),
                     })
@@ -95,7 +95,7 @@ impl Program<'_> {
                             return Err(ErrorKind::WrongNumberArgs(name, 2, args.len()));
                         }
                         if let Some(sampler) = ctx.samplers.get(&args[0]).copied() {
-                            Ok(ctx.function.expressions.append(Expression::ImageSample {
+                            Ok(ctx.expressions.append(Expression::ImageSample {
                                 image: args[0],
                                 sampler,
                                 coordinate: args[1],
@@ -113,7 +113,7 @@ impl Program<'_> {
                             return Err(ErrorKind::WrongNumberArgs(name, 3, args.len()));
                         }
                         if let Some(sampler) = ctx.samplers.get(&args[0]).copied() {
-                            Ok(ctx.function.expressions.append(Expression::ImageSample {
+                            Ok(ctx.expressions.append(Expression::ImageSample {
                                 image: args[0],
                                 sampler,
                                 coordinate: args[1],
@@ -132,7 +132,7 @@ impl Program<'_> {
                         if args.len() != 1 {
                             return Err(ErrorKind::WrongNumberArgs(name, 1, args.len()));
                         }
-                        Ok(ctx.function.expressions.append(Expression::Math {
+                        Ok(ctx.expressions.append(Expression::Math {
                             fun: match name.as_str() {
                                 "ceil" => MathFunction::Ceil,
                                 "round" => MathFunction::Round,
@@ -160,7 +160,7 @@ impl Program<'_> {
                         if args.len() != 2 {
                             return Err(ErrorKind::WrongNumberArgs(name, 2, args.len()));
                         }
-                        Ok(ctx.function.expressions.append(Expression::Math {
+                        Ok(ctx.expressions.append(Expression::Math {
                             fun: match name.as_str() {
                                 "pow" => MathFunction::Pow,
                                 "dot" => MathFunction::Dot,
@@ -176,7 +176,7 @@ impl Program<'_> {
                         if args.len() != 3 {
                             return Err(ErrorKind::WrongNumberArgs(name, 3, args.len()));
                         }
-                        Ok(ctx.function.expressions.append(Expression::Math {
+                        Ok(ctx.expressions.append(Expression::Math {
                             fun: match name.as_str() {
                                 "mix" => MathFunction::Mix,
                                 "clamp" => MathFunction::Clamp,
@@ -192,7 +192,7 @@ impl Program<'_> {
                         if args.len() != 2 {
                             return Err(ErrorKind::WrongNumberArgs(name, 2, args.len()));
                         }
-                        Ok(ctx.function.expressions.append(Expression::Binary {
+                        Ok(ctx.expressions.append(Expression::Binary {
                             op: match name.as_str() {
                                 "lessThan" => BinaryOperator::Less,
                                 "greaterThan" => BinaryOperator::Greater,
@@ -221,9 +221,8 @@ impl Program<'_> {
                             )
                         })?;
                         let arguments: Vec<_> = args.to_vec();
-                        let expression =
-                            ctx.function.expressions.append(Expression::Call(function));
-                        ctx.function.body.push(crate::Statement::Call {
+                        let expression = ctx.expressions.append(Expression::Call(function));
+                        body.push(crate::Statement::Call {
                             function,
                             arguments,
                             result: Some(expression),
@@ -237,7 +236,7 @@ impl Program<'_> {
 
     pub fn parse_relational_fun(
         &mut self,
-        ctx: &mut FunctionContext,
+        ctx: &mut Context,
         name: String,
         args: &[Handle<Expression>],
         fun: RelationalFunction,
@@ -246,7 +245,7 @@ impl Program<'_> {
             return Err(ErrorKind::WrongNumberArgs(name, 1, args.len()));
         }
 
-        Ok(ctx.function.expressions.append(Expression::Relational {
+        Ok(ctx.expressions.append(Expression::Relational {
             fun,
             argument: args[0],
         }))
@@ -259,13 +258,6 @@ impl Program<'_> {
             .clone()
             .ok_or_else(|| ErrorKind::SemanticError("Unnamed function".into()))?;
         let stage = self.entry_points.get(&name);
-
-        // Add the input variables as a function argument
-        function.arguments.push(FunctionArgument {
-            name: None,
-            ty: self.input_struct,
-            binding: None,
-        });
 
         let handle = self.module.functions.append(function);
 
@@ -284,6 +276,12 @@ impl Program<'_> {
             let mut expressions = Arena::new();
             let mut body = Vec::new();
 
+            arguments.push(FunctionArgument {
+                name: None,
+                ty: self.input_struct,
+                binding: None,
+            });
+
             for (built_in, handle) in self.built_ins.iter().copied() {
                 let ty = self.module.global_variables[handle].ty;
                 let arg = arguments.len() as u32;
@@ -300,18 +298,11 @@ impl Program<'_> {
                 body.push(Statement::Store { pointer, value });
             }
 
-            let i = arguments.len() as u32;
-            arguments.push(FunctionArgument {
-                name: None,
-                ty: self.input_struct,
-                binding: None,
-            });
-
             let res = expressions.append(Expression::Call(function));
 
             body.push(Statement::Call {
                 function,
-                arguments: vec![expressions.append(Expression::FunctionArgument(i))],
+                arguments: vec![expressions.append(Expression::FunctionArgument(0))],
                 result: Some(res),
             });
 
@@ -321,7 +312,7 @@ impl Program<'_> {
                 }
 
                 let value = expressions.append(Expression::GlobalVariable(handle));
-                let pointer = expressions.append(Expression::FunctionArgument(i as u32));
+                let pointer = expressions.append(Expression::FunctionArgument(i as u32 + 1));
 
                 body.push(Statement::Store { pointer, value });
             }
