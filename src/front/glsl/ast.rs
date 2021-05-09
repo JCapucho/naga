@@ -511,7 +511,7 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TypeQualifier {
     StorageQualifier(StorageQualifier),
     Interpolation(Interpolation),
